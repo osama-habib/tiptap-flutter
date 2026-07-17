@@ -3,7 +3,7 @@
 // These types collect timing measurements about the bridge and editor so the
 // performance overlay can display them. They are NOT part of the engine
 // protocol — they describe how the Flutter port observes its own behavior,
-// not anything exchanged with the engine. Four things are measured:
+// not anything exchanged with the engine. Five things are measured:
 //
 //   - Command round-trips: how long a command takes from the moment it is
 //     sent to the engine until its correlated response arrives.
@@ -20,12 +20,62 @@
 //     port records them so the overlay can show where the round-trip's time
 //     actually goes (transport vs engine compute), decomposing the round-trip
 //     number the port already measures.
+//   - Port phases: the Dart-side slice of a keystroke — decoding and parsing
+//     a state event's JSON into typed payloads (recorded by the bridge), and
+//     the state-driven frame's UI-thread build and raster-thread durations
+//     (recorded by the editor's frame-timing recorder). These decompose the
+//     remainder of the typing latency that the round-trip and engine phases
+//     do not account for.
 //
 // [BridgeMetrics] is a plain mutable holder. The bridge owns one instance,
 // records into it, and exposes it (plus a change stream) so the overlay can
 // render live values.
 
 import 'protocol_constants.dart';
+
+/// Names of the port-side phase measurements recorded into
+/// [BridgeMetrics.portPhaseStats].
+///
+/// These decompose the Dart-side slice of a keystroke the same way
+/// [TimingPhase] decomposes the engine's slice: typing latency minus the
+/// command round-trip is the port's share, and these phases say where it
+/// goes. Unlike [TimingPhase] these values never cross the wire — they are
+/// port-internal, which is why they live here rather than in
+/// protocol_constants.dart (which names the wire contract only).
+///
+/// The measurement identity these phases exist to make checkable:
+///   typing latency ≈ round-trip + decode + parse + frameBuild + frameRaster
+/// (plus frame-scheduling wait, which is the only unmeasured remainder).
+///
+/// As with the protocol namespace classes, this is declared abstract with a
+/// private constructor so it groups string constants under a typed name
+/// without being instantiable.
+abstract class PortPhase {
+  PortPhase._();
+
+  /// Time spent in jsonDecode turning a state-carrying event's raw message
+  /// string into a Map. On large documents that string is the entire
+  /// serialized state, so decode can dominate the total parse cost — which
+  /// is why it is measured separately from [parse] rather than folded in.
+  /// Only state-carrying events (stateChanged, contentChanged,
+  /// selectionChanged) are recorded; timing every tiny response decode
+  /// would skew the stats toward near-zero values.
+  static const String decode = 'decode';
+
+  /// Time spent in EditorStatePayload.fromJson for a state-carrying event:
+  /// the Map-to-typed-payload step, including the recursive AnnotatedNode
+  /// tree construction. Measured by the bridge around the parse call.
+  static const String parse = 'parse';
+
+  /// The UI-thread duration of a state-driven frame — widget build, layout,
+  /// and paint recording — as reported by FrameTiming.buildDuration for the
+  /// exact frame the state update produced.
+  static const String frameBuild = 'frameBuild';
+
+  /// The raster-thread duration of the same frame, as reported by
+  /// FrameTiming.rasterDuration.
+  static const String frameRaster = 'frameRaster';
+}
 
 /// A single command round-trip measurement.
 ///
@@ -306,6 +356,17 @@ class BridgeMetrics {
   Map<String, RollingStats> get enginePhaseStats =>
       Map.unmodifiable(_enginePhaseStats);
 
+  /// Per-phase rolling statistics over port-side measurements, keyed by
+  /// phase name ([PortPhase] values). The decode and parse phases are
+  /// recorded by the bridge as state-carrying events arrive; the frame
+  /// phases are recorded by the editor's frame-timing recorder for
+  /// state-driven frames. This is the decomposition of the port's share of
+  /// typing latency, complementing the engine-phase decomposition of the
+  /// round-trip's engine share.
+  final Map<String, RollingStats> _portPhaseStats = {};
+  Map<String, RollingStats> get portPhaseStats =>
+      Map.unmodifiable(_portPhaseStats);
+
   /// Optional callback invoked after any sample is recorded, so the owner
   /// (the bridge) can emit a change notification on its metrics stream.
   void Function()? onChange;
@@ -362,6 +423,13 @@ class BridgeMetrics {
     for (final entry in timings.presentPhases.entries) {
       (_enginePhaseStats[entry.key] ??= RollingStats()).add(entry.value);
     }
+    onChange?.call();
+  }
+
+  /// Record a single port-side phase duration ([PortPhase] values) into its
+  /// rolling stats.
+  void recordPortPhase(String phase, double ms) {
+    (_portPhaseStats[phase] ??= RollingStats()).add(ms);
     onChange?.call();
   }
 }

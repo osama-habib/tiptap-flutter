@@ -5,6 +5,27 @@
 // and uses the position registry to convert ProseMirror positions to pixel
 // coordinates. It supports both collapsed selections (cursor) and range
 // selections (highlighted rectangles).
+//
+// Repaint isolation contract:
+// The editor wraps this overlay in its own RepaintBoundary so the cursor
+// blink re-rasterizes only this near-empty layer instead of the layer
+// containing all document text. That isolation removes two implicit repaint
+// triggers this painter used to depend on without knowing it:
+//
+//   - Scrolling: the painter resolves pixel positions through the registry
+//     at paint time, so it stayed visually in sync during scroll only
+//     because scrolling dirtied the shared layer and forced a repaint every
+//     tick. In its own layer, the overlay must be told about scrolls
+//     explicitly — the [repaint] listenable (the editor's scroll controller)
+//     carries that signal straight to the render object, repainting the
+//     small overlay layer without a widget rebuild.
+//
+//   - Layout changes without selection changes: an edit that reflows text
+//     while the selection state stays value-equal (e.g., toggling a heading
+//     at a collapsed cursor) moves the caret's pixel position without
+//     changing anything shouldRepaint used to compare. The shared layer
+//     masked this too. shouldRepaint is therefore unconditional now — see
+//     the override for why that is the cheapest correct answer.
 
 import 'package:flutter/material.dart';
 
@@ -28,6 +49,16 @@ class EditorSelectionOverlay extends StatefulWidget {
   /// when focused.
   final bool hasFocus;
 
+  /// External repaint trigger forwarded to the painter's repaint listenable.
+  ///
+  /// The editor passes its scroll controller here: with this overlay in its
+  /// own RepaintBoundary, scrolling the document no longer implicitly
+  /// repaints it, so the caret and highlights would freeze while text
+  /// scrolls underneath. Wiring the scroll controller through
+  /// CustomPainter's repaint mechanism repaints exactly this layer on every
+  /// scroll tick — no setState, no widget rebuild, no document raster work.
+  final Listenable? repaint;
+
   /// The color used for the cursor caret.
   final Color cursorColor;
 
@@ -39,6 +70,7 @@ class EditorSelectionOverlay extends StatefulWidget {
     required this.selection,
     required this.registry,
     this.hasFocus = true,
+    this.repaint,
     this.cursorColor = const Color(0xFF1A73E8),
     this.selectionColor = const Color(0x401A73E8),
   });
@@ -127,6 +159,7 @@ class _EditorSelectionOverlayState extends State<EditorSelectionOverlay>
         cursorColor: widget.cursorColor,
         selectionColor: widget.selectionColor,
         parentContext: context,
+        repaint: widget.repaint,
       ),
     );
   }
@@ -148,6 +181,10 @@ class _SelectionPainter extends CustomPainter {
   /// Width of the cursor caret in logical pixels.
   static const double _cursorWidth = 2.0;
 
+  /// The repaint listenable (the editor's scroll controller) is forwarded
+  /// to CustomPainter so scroll notifications mark this painter's render
+  /// object dirty directly, keeping the overlay in sync with the document
+  /// scrolling beneath its RepaintBoundary.
   _SelectionPainter({
     required this.selection,
     required this.registry,
@@ -155,7 +192,8 @@ class _SelectionPainter extends CustomPainter {
     required this.cursorColor,
     required this.selectionColor,
     required this.parentContext,
-  });
+    Listenable? repaint,
+  }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -293,11 +331,21 @@ class _SelectionPainter extends CustomPainter {
     }
   }
 
+  /// Unconditionally repaint whenever the overlay rebuilds.
+  ///
+  /// The painter resolves every pixel position at paint time through the
+  /// registry, so its output depends on document layout — which the
+  /// delegate's own fields say nothing about. An edit can reflow text while
+  /// selection, focus, and colors all stay value-equal (toggling a heading
+  /// at a collapsed cursor moves the caret without changing the selection),
+  /// and comparing those fields would skip the repaint and leave the caret
+  /// at its stale pixel position. The shared layer used to mask this class
+  /// of miss; the RepaintBoundary makes it visible.
+  ///
+  /// Returning true costs one repaint of a near-empty layer per overlay
+  /// rebuild (stateChanged, blink tick, chrome setState) — negligible, and
+  /// strictly cheaper than introducing a document-revision identity on the
+  /// protocol types just to compare here.
   @override
-  bool shouldRepaint(_SelectionPainter oldDelegate) {
-    return oldDelegate.selection != selection ||
-        oldDelegate.showCursor != showCursor ||
-        oldDelegate.cursorColor != cursorColor ||
-        oldDelegate.selectionColor != selectionColor;
-  }
+  bool shouldRepaint(_SelectionPainter oldDelegate) => true;
 }

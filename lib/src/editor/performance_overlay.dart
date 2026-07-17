@@ -6,7 +6,7 @@
 // timings and rolling statistics. It reads from the bridge's [BridgeMetrics]
 // and rebuilds whenever a new sample lands.
 //
-// Four panels of information are shown:
+// Five panels of information are shown:
 //   - Engine load: per-phase cold-start breakdown and total.
 //   - Command round-trips: per-command count, last, mean, min, and max.
 //   - Engine phases: how the engine spent the JavaScript-side slice of a
@@ -15,6 +15,11 @@
 //     command's round-trip mean shows how much of the round-trip is engine
 //     compute versus transport. The commandStates phase is the prime suspect
 //     for per-keystroke cost.
+//   - Port phases: how the Dart side spent its slice of a keystroke —
+//     decoding and parsing the state event's JSON into typed payloads, and
+//     the state-driven frame's UI-thread build and raster-thread durations.
+//     Together with the round-trip this completes the latency identity:
+//     typing latency ≈ round-trip + decode + parse + frame build + raster.
 //   - Typing latency: end-to-end keystroke-to-repaint statistics, labeled as
 //     an in-order approximation, with a dropped-sample count.
 
@@ -28,7 +33,7 @@ import 'editor_controller.dart';
 
 /// A draggable bottom sheet overlay showing live performance metrics for the
 /// editor: engine load phases, command round-trips, engine internal phases,
-/// and typing latency.
+/// port-side phases, and typing latency.
 ///
 /// Named with the Tiptap prefix to avoid colliding with Flutter's own
 /// [PerformanceOverlay] widget, which is in scope wherever material.dart is
@@ -139,6 +144,8 @@ class _TiptapPerformanceOverlayState extends State<TiptapPerformanceOverlay> {
                     _buildRoundTripSection(metrics),
                     const SizedBox(height: 24),
                     _buildEnginePhaseSection(metrics),
+                    const SizedBox(height: 24),
+                    _buildPortPhaseSection(metrics),
                     const SizedBox(height: 24),
                     _buildTypingSection(metrics),
                   ],
@@ -273,6 +280,76 @@ class _TiptapPerformanceOverlayState extends State<TiptapPerformanceOverlay> {
         return '  ↳ can()';
       case TimingPhase.commandStatesActive:
         return '  ↳ isActive()';
+      default:
+        return phase;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Port phase section
+  // ---------------------------------------------------------------------------
+
+  /// Build the port-side phase table: how the Dart side spent its slice of a
+  /// keystroke, from receiving the raw state event to rasterizing the frame
+  /// it produced.
+  ///
+  /// Phases are shown in pipeline order rather than sorted: decode (raw
+  /// string to Map) and parse (Map to typed payloads) are recorded by the
+  /// bridge; frame build and frame raster are the state-driven frame's
+  /// durations recorded by the editor's frame-timing recorder. The frame
+  /// pairing is exact (matched by frame number), so unlike the typing panel
+  /// no approximation caveat applies here.
+  Widget _buildPortPhaseSection(BridgeMetrics metrics) {
+    final stats = metrics.portPhaseStats;
+
+    const order = <String>[
+      PortPhase.decode,
+      PortPhase.parse,
+      PortPhase.frameBuild,
+      PortPhase.frameRaster,
+    ];
+
+    final present = [
+      for (final p in order)
+        if (stats.containsKey(p)) p,
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader('Port phases'),
+
+        _emptyHint(
+          'How the Dart side spends its slice of a keystroke (ms). decode/'
+          'parse turn the state event into typed payloads; frame build and '
+          'raster are the state-driven frame\'s UI-thread and raster-thread '
+          'durations. Round-trip + these ≈ typing latency.',
+        ),
+        const SizedBox(height: 8),
+        if (present.isEmpty)
+          _emptyHint(
+            'No port timings yet. They arrive with state events — type or '
+            'run a command to populate this.',
+          )
+        else ...[
+          _statsHeaderRow('phase'),
+          const SizedBox(height: 4),
+          for (final phase in present)
+            _statsRow(_portPhaseLabel(phase), stats[phase]!),
+        ],
+      ],
+    );
+  }
+
+  /// Map a port-phase key to its display label. The frame phases get
+  /// thread-qualified names so the table makes clear which durations are
+  /// UI-thread work and which happen off-thread on the raster side.
+  String _portPhaseLabel(String phase) {
+    switch (phase) {
+      case PortPhase.frameBuild:
+        return 'frame build (UI)';
+      case PortPhase.frameRaster:
+        return 'frame raster';
       default:
         return phase;
     }

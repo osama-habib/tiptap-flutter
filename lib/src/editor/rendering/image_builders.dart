@@ -1,3 +1,8 @@
+// NOTE: this file currently holds the BLOCK-node builders while
+// node_builders.dart holds the image builders — the two files' contents are
+// swapped relative to their names. Apply this artifact to whichever file
+// contains _buildRichTextBlock.
+//
 // Block-node widget builders for the document renderer.
 //
 // This is a part of the `document_renderer` library (see document_renderer.dart).
@@ -30,7 +35,17 @@ Widget _buildRichTextBlock({
 
   /// The position registry uses this key to find the RichText's
   /// RenderParagraph later for hit-testing and caret positioning.
-  final richTextKey = GlobalKey();
+  ///
+  /// The key comes from the registry's stable per-ordinal store rather than
+  /// a fresh GlobalKey per build: a stable key lets Flutter update the
+  /// block's existing RichText element in place, so RenderParagraph.text can
+  /// short-circuit on value-equal span trees and unchanged blocks skip
+  /// layout entirely on a keystroke. With per-build keys, every block's
+  /// element was deactivated and re-inflated on every rebuild, relaying out
+  /// the whole document per keystroke. Null when position tracking is
+  /// disabled — an unkeyed RichText is then matched positionally, which
+  /// reuses elements just as well.
+  final GlobalKey? richTextKey = registry?.takeNextBlockKey();
 
   if (isEmpty) {
     /// The zero-width space produces a real RenderParagraph with measurable
@@ -46,7 +61,7 @@ Widget _buildRichTextBlock({
         RegisteredBlock(
           pos: node.pos!,
           end: node.end!,
-          key: richTextKey,
+          key: richTextKey!,
           spanMappings: [
             InlineSpanMapping(
               pos: node.pos!,
@@ -68,7 +83,7 @@ Widget _buildRichTextBlock({
   final result = buildTextSpanWithMappings(
     children: node.content!,
     baseStyle: style,
-    onLinkTap: _onLinkTap,
+    linkRecognizerFor: _linkRecognizerFor,
   );
 
   if (registry != null && node.pos != null && node.end != null) {
@@ -76,7 +91,7 @@ Widget _buildRichTextBlock({
       RegisteredBlock(
         pos: node.pos!,
         end: node.end!,
-        key: richTextKey,
+        key: richTextKey!,
         spanMappings: result.spanMappings,
       ),
     );

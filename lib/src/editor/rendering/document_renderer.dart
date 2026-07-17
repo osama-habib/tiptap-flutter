@@ -30,6 +30,7 @@
 
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../engine/protocol_types.dart';
@@ -81,7 +82,9 @@ class _DocumentRendererState extends State<DocumentRenderer> {
     }
 
     /// Clear before rebuilding so stale entries from previous renders don't
-    /// persist.
+    /// persist. This also rewinds the registry's stable block-key ordinal so
+    /// the walk below hands the same keys to the same blocks in document
+    /// order (see PositionRegistry.takeNextBlockKey).
     widget.positionRegistry?.clear();
 
     final children = widget.doc.content ?? [];
@@ -178,4 +181,32 @@ const _baseTextStyle = TextStyle(
 void _onLinkTap(String url) {
   // ignore: avoid_print
   print('[TiptapEditor] Link tapped: $url');
+}
+
+/// Cache of tap recognizers for link spans, keyed by destination URL.
+///
+/// Recognizers need a lifetime beyond one build: the previous behavior of
+/// constructing a fresh TapGestureRecognizer per link span per build leaked
+/// every one of them (nothing ever disposed the previous build's
+/// recognizers) and made unchanged link spans compare as changed, invalidating
+/// semantics on every keystroke for any block containing a link. Serving the
+/// same recognizer for the same URL keeps link spans value-stable across
+/// rebuilds.
+///
+/// Keyed by URL rather than by block or span because the recognizer's only
+/// state is its onTap target, which depends solely on the URL — sharing one
+/// recognizer across every span linking to the same destination is safe. The
+/// cache is bounded at one recognizer per distinct URL seen in the session
+/// and is deliberately never cleared: builders are library-level functions
+/// with no dispose hook, and an idle recognizer holds no resources beyond
+/// its own allocation, so a lifetime cache is strictly cheaper than the
+/// per-build churn it replaces.
+final Map<String, TapGestureRecognizer> _linkRecognizers = {};
+
+/// Resolve the cached recognizer for a link destination, creating it on
+/// first sight of the URL. Passed into the span builder by
+/// _buildRichTextBlock.
+TapGestureRecognizer _linkRecognizerFor(String url) {
+  return _linkRecognizers[url] ??= (TapGestureRecognizer()
+    ..onTap = () => _onLinkTap(url));
 }

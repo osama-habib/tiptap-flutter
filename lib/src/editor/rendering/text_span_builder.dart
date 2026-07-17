@@ -38,10 +38,20 @@ class TextSpanBuildResult {
 /// a block node's content array.
 /// [baseStyle] is the default text style inherited from the parent block
 /// (e.g., heading size, blockquote color).
-/// [onLinkTap] is an optional callback invoked when a link is tapped.
+/// [linkRecognizerFor] resolves the gesture recognizer to attach to a link
+/// span, given its destination URL. Callers should supply a caching resolver
+/// (see the document renderer's recognizer cache): recognizers need a
+/// lifetime beyond one build, and constructing a fresh one per span per
+/// build both leaks them (nothing disposes the previous build's) and makes
+/// unchanged link spans compare as changed, forcing needless semantics
+/// updates every keystroke.
+/// [onLinkTap] is the legacy fallback: when no resolver is supplied, a fresh
+/// recognizer wired to this callback is created per span, with the costs
+/// above. Retained so external callers of this public function keep working.
 TextSpanBuildResult buildTextSpanWithMappings({
   required List<AnnotatedNode> children,
   required TextStyle baseStyle,
+  GestureRecognizer Function(String url)? linkRecognizerFor,
   void Function(String url)? onLinkTap,
 }) {
   final spans = <InlineSpan>[];
@@ -62,14 +72,18 @@ TextSpanBuildResult buildTextSpanWithMappings({
       final linkHref = _extractLinkHref(child.marks);
       final textLength = child.text!.length;
 
+      GestureRecognizer? recognizer;
+      if (linkHref != null) {
+        if (linkRecognizerFor != null) {
+          recognizer = linkRecognizerFor(linkHref);
+        } else if (onLinkTap != null) {
+          recognizer = TapGestureRecognizer()
+            ..onTap = () => onLinkTap(linkHref);
+        }
+      }
+
       spans.add(
-        TextSpan(
-          text: child.text,
-          style: style,
-          recognizer: linkHref != null && onLinkTap != null
-              ? (TapGestureRecognizer()..onTap = () => onLinkTap(linkHref))
-              : null,
-        ),
+        TextSpan(text: child.text, style: style, recognizer: recognizer),
       );
 
       if (child.pos != null && child.end != null) {
@@ -107,11 +121,13 @@ TextSpanBuildResult buildTextSpanWithMappings({
 TextSpan buildTextSpan({
   required List<AnnotatedNode> children,
   required TextStyle baseStyle,
+  GestureRecognizer Function(String url)? linkRecognizerFor,
   void Function(String url)? onLinkTap,
 }) {
   return buildTextSpanWithMappings(
     children: children,
     baseStyle: baseStyle,
+    linkRecognizerFor: linkRecognizerFor,
     onLinkTap: onLinkTap,
   ).span;
 }

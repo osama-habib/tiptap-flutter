@@ -9,6 +9,13 @@
 //   Pos → paint: ProseMirror pos → which block → local text offset → pixel offset
 //   Long-press → word: globalOffset → which block → word boundary → ProseMirror range
 //
+// The registry also owns the stable widget keys for text blocks (see
+// [takeNextBlockKey]). Key stability is what lets Flutter update a block's
+// existing RichText element in place across rebuilds instead of re-inflating
+// it; the registry owns them because it is the one per-editor object every
+// block builder already receives, and because the keys exist to serve its
+// own render-object lookups.
+//
 // Timing requirement: every lookup in this registry goes through
 // RenderParagraph text-layout queries, which are only valid after the
 // frame's layout pass. Callers must query from gesture handlers, post-frame
@@ -209,16 +216,73 @@ class PositionRegistry {
   /// Read-only access to the registered blocks for debugging.
   List<RegisteredBlock> get blocks => List.unmodifiable(_blocks);
 
+  /// Stable widget keys for text blocks, indexed by block ordinal — the
+  /// n-th text block encountered in a build, in document order.
+  ///
+  /// These deliberately survive [clear]: key stability across rebuilds is
+  /// their entire purpose. When the renderer created a fresh GlobalKey for
+  /// every block on every build, Flutter could never update an existing
+  /// RichText element — a changed key forces the element to be deactivated
+  /// and re-inflated, so every RenderParagraph in the document was recreated
+  /// and laid out from scratch on every keystroke. With a stable key, the
+  /// element survives, RenderParagraph.text runs its RenderComparison
+  /// short-circuit, and blocks whose span tree is value-equal to the previous
+  /// build skip layout entirely.
+  ///
+  /// Ordinal keying is the pragmatic identity in the absence of engine node
+  /// ids: inserting or removing a block shifts the ordinals of every block
+  /// after it, moving each shifted block onto its neighbor's key. That costs
+  /// one relayout for the shifted blocks on that one edit — the same work a
+  /// content change there would cost — and nothing on ordinary typing, where
+  /// ordinals are stable.
+  ///
+  /// The list only grows (to the largest block count seen); trailing keys
+  /// for blocks that no longer exist simply sit unused, holding no element.
+  final List<GlobalKey> _blockKeys = [];
+
+  /// The ordinal the next [takeNextBlockKey] call will serve. Reset to 0 by
+  /// [clear] so each build's document-order walk reassigns the same keys to
+  /// the same ordinals.
+  int _nextBlockKeyOrdinal = 0;
+
   /// Clear all registrations. Called before each document re-render to
-  /// ensure stale entries don't persist.
+  /// ensure stale entries don't persist. Also rewinds the block-key ordinal
+  /// so the upcoming build hands out the same stable keys in document order;
+  /// the keys themselves are retained (see [_blockKeys]).
   void clear() {
     _blocks.clear();
+    _nextBlockKeyOrdinal = 0;
+  }
+
+  /// Hand out the stable widget key for the next text block in document
+  /// order. Block builders call this exactly once per text block during a
+  /// build; because every build walks the document in the same order, the
+  /// n-th call always returns the n-th key, giving each block a key that
+  /// persists across rebuilds. A new key is created only when the document
+  /// grows past the largest block count seen so far.
+  GlobalKey takeNextBlockKey() {
+    if (_nextBlockKeyOrdinal >= _blockKeys.length) {
+      _blockKeys.add(GlobalKey());
+    }
+    return _blockKeys[_nextBlockKeyOrdinal++];
   }
 
   /// Register a text block with its position range and span mappings.
+  ///
+  /// Blocks are expected in document order: the renderer constructs block
+  /// widgets in a synchronous depth-first walk of the annotated tree, so
+  /// each registration's pos is at or after the previous one and the sorted
+  /// invariant holds without sorting. The conditional below is a safety net
+  /// for custom builders (the registry is part of the public extension
+  /// surface) that register out of order — only then is the sort paid,
+  /// instead of on every insert, which made registration O(n² log n) per
+  /// build for nothing.
   void registerBlock(RegisteredBlock block) {
+    final outOfOrder = _blocks.isNotEmpty && block.pos < _blocks.last.pos;
     _blocks.add(block);
-    _blocks.sort((a, b) => a.pos.compareTo(b.pos));
+    if (outOfOrder) {
+      _blocks.sort((a, b) => a.pos.compareTo(b.pos));
+    }
   }
 
   /// Convert a global pixel offset to a ProseMirror document position.
@@ -229,8 +293,11 @@ class PositionRegistry {
       final rp = block.renderParagraph;
 
       /// hasSize is the release-safe guard against build-phase queries:
-      /// freshly created RenderParagraphs (the renderer creates new
-      /// GlobalKeys every build) have no size until the layout pass runs.
+      /// RenderParagraphs for newly inserted blocks have no size until the
+      /// layout pass runs, and blocks affected by the current edit are dirty
+      /// during build. (Block keys are stable across builds, so untouched
+      /// blocks keep their laid-out render objects — but the no-queries-
+      /// during-build rule still applies to every caller.)
       if (rp == null || !rp.attached || !rp.hasSize) continue;
 
       final localOffset = rp.globalToLocal(globalOffset);

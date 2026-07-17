@@ -911,10 +911,18 @@ class TiptapBridge {
   ///   - "bridgeAdapterReady": confirms the adapter script ran
   ///   - "engineGlobalReady": confirms TiptapEngine global exists
   ///   - "engineGlobalTimeout": TiptapEngine was not found after polling
+  ///
+  /// The jsonDecode of the raw string is timed here for every message, but
+  /// the duration is only recorded (as the port-side decode phase) for
+  /// state-carrying events, inside [_handleEvent]. On large documents the
+  /// stateChanged string is the entire serialized state, so its decode is a
+  /// meaningful per-keystroke cost; decode times for tiny responses would
+  /// only skew the phase's stats toward zero.
   void _handleIncomingMessage(String rawMessage) {
     _addLog(LogDirection.received, rawMessage);
 
     Map<String, dynamic> data;
+    final decodeStopwatch = Stopwatch()..start();
     try {
       data = jsonDecode(rawMessage) as Map<String, dynamic>;
     } catch (e) {
@@ -925,6 +933,8 @@ class TiptapBridge {
       );
       return;
     }
+    decodeStopwatch.stop();
+    final decodeMs = decodeStopwatch.elapsedMicroseconds / 1000.0;
 
     _rawEventController.add(data);
 
@@ -935,7 +945,7 @@ class TiptapBridge {
         _handleResponse(data);
         break;
       case MessageType.event:
-        _handleEvent(data);
+        _handleEvent(data, decodeMs);
         break;
       case BridgeInternalMessage.bridgeAdapterReady:
         _addLog(LogDirection.system, 'Bridge adapter confirmed ready by JS');
@@ -1030,7 +1040,12 @@ class TiptapBridge {
   }
 
   /// Dispatch an event message to the appropriate stream.
-  void _handleEvent(Map<String, dynamic> data) {
+  ///
+  /// [decodeMs] is the jsonDecode duration for this message, measured by
+  /// [_handleIncomingMessage]; the state-carrying cases record it as the
+  /// port-side decode phase so the Dart cost of turning the raw string into
+  /// a Map is visible in the metrics.
+  void _handleEvent(Map<String, dynamic> data, double decodeMs) {
     /// The engine uses "name" for the event name and "payload" for event data.
     final eventName = data[ProtocolKey.name] as String?;
     final eventData = data[ProtocolKey.payload] as Map<String, dynamic>? ?? {};
@@ -1073,7 +1088,8 @@ class TiptapBridge {
         /// per-keystroke decomposition the instrumentation is for.
         _recordEngineTimings(data);
 
-        _lastState = EditorStatePayload.fromJson(eventData);
+        metrics.recordPortPhase(PortPhase.decode, decodeMs);
+        _lastState = _timedParseState(eventData);
         _stateChangedController.add(_lastState!);
         _addLog(
           LogDirection.system,
@@ -1091,7 +1107,8 @@ class TiptapBridge {
       /// or command state data. Merge with the existing state so we don't
       /// lose selection and command state information.
       case EventName.contentChanged:
-        final partial = EditorStatePayload.fromJson(eventData);
+        metrics.recordPortPhase(PortPhase.decode, decodeMs);
+        final partial = _timedParseState(eventData);
         if (_lastState != null) {
           _lastState = EditorStatePayload(
             doc: partial.doc ?? _lastState!.doc,
@@ -1117,7 +1134,8 @@ class TiptapBridge {
       /// states, but omits the document tree. Merge with the existing state
       /// so we don't lose the document.
       case EventName.selectionChanged:
-        final partial = EditorStatePayload.fromJson(eventData);
+        metrics.recordPortPhase(PortPhase.decode, decodeMs);
+        final partial = _timedParseState(eventData);
         if (_lastState != null) {
           _lastState = EditorStatePayload(
             doc: _lastState!.doc,
@@ -1174,6 +1192,22 @@ class TiptapBridge {
           'Data: ${jsonEncode(eventData)}',
         );
     }
+  }
+
+  /// Parse a state-carrying event's payload into an [EditorStatePayload],
+  /// recording the elapsed time as the port-side parse phase. The wrapping
+  /// lives here — at the single point where JSON maps become typed state —
+  /// so every state-carrying event (the full stateChanged and the partial
+  /// contentChanged/selectionChanged) is measured through one path.
+  EditorStatePayload _timedParseState(Map<String, dynamic> eventData) {
+    final stopwatch = Stopwatch()..start();
+    final state = EditorStatePayload.fromJson(eventData);
+    stopwatch.stop();
+    metrics.recordPortPhase(
+      PortPhase.parse,
+      stopwatch.elapsedMicroseconds / 1000.0,
+    );
+    return state;
   }
 
   /// Parse the optional engine `timings` field from a response or stateChanged

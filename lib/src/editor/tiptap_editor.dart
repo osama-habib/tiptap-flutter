@@ -25,6 +25,13 @@
 //   - typing_latency_tracker.dart: the keystroke-to-repaint pairing that
 //     measures end-to-end typing latency.
 //
+// Performance instrumentation adds one more owned piece:
+//   - frame_timing_recorder.dart: pairs every state-driven frame with its
+//     FrameTiming report (by frame number, exactly) to record the frame's
+//     UI-thread build and raster-thread durations as port phases. Together
+//     with the bridge-measured decode/parse phases this decomposes the
+//     Dart-side share of the typing latency the tracker measures end-to-end.
+//
 // Native text selection adds three more owned pieces:
 //   - selection_text_extractor.dart: the pure document-tree slice that
 //     produces the plain text of a selected range, for clipboard Copy/Cut.
@@ -43,27 +50,54 @@
 // Selection chrome geometry timing:
 // Handle and toolbar positions come from RenderParagraph text-layout queries
 // through the position registry. Those queries are only valid AFTER the
-// frame's layout pass — and because the document renderer creates fresh
-// GlobalKeys (and therefore fresh RenderParagraphs) on every rebuild, they
-// are NEVER valid during the build phase (querying then throws the
-// !debugNeedsLayout assertion). The widget therefore computes a cached
-// SelectionChromeGeometry in a post-frame callback and renders the chrome
-// from the cache, calling setState only when the geometry actually changed
-// so the update loop settles after one extra frame. The painter is
-// unaffected (it reads layout at paint time, which is always after layout),
-// and gesture callbacks are unaffected (they run between frames, after the
-// previous frame's layout). The visible cost is the chrome lagging content
-// by one frame.
+// frame's layout pass — during the build phase, any RenderParagraph affected
+// by the current edit (including newly inserted blocks) is dirty and not yet
+// laid out, so querying then throws the !debugNeedsLayout assertion. (The
+// renderer's block keys are stable across builds, so untouched blocks keep
+// laid-out render objects — but which blocks an edit touches is not knowable
+// from here, so the no-queries-during-build rule applies unconditionally.)
+// The widget therefore computes a cached SelectionChromeGeometry in a
+// post-frame callback and renders the chrome from the cache, calling setState
+// only when the geometry actually changed so the update loop settles after
+// one extra frame. The painter is unaffected (it reads layout at paint time,
+// which is always after layout), and gesture callbacks are unaffected (they
+// run between frames, after the previous frame's layout). The visible cost is
+// the chrome lagging content by one frame.
+//
+// Repaint isolation:
+// The overlay Stack contains two RepaintBoundaries. One wraps the document's
+// scroll view, so the rasterized document text lives in its own layer that
+// no sibling can invalidate. The other wraps the selection overlay, so the
+// cursor blink's twice-a-second setState re-records and re-rasterizes only
+// that near-empty layer (one caret rect, some highlight rects) instead of
+// the layer that used to hold all document text. Handles, toolbar, and
+// magnifier are deliberately left un-bounded: with the two heavy layers
+// isolated, chrome repaints land in the cheap parent layer.
+//
+// The boundary sits AROUND the scroll view rather than inside it around the
+// DocumentRenderer: an inside boundary would rasterize a layer the full
+// height of the document, which is exactly the oversized-texture pattern
+// the raster cache penalizes on large documents (and Phase 5's sliver
+// restructure replaces that region anyway).
+//
+// Isolating the overlay removes an accidental dependency: the painter reads
+// pixel positions from the registry at paint time, and previously stayed in
+// sync during scroll only because scrolling dirtied the shared layer. The
+// widget therefore owns a ScrollController, attaches it to the scroll view,
+// and passes it to the overlay as its repaint listenable — every scroll tick
+// repaints the small overlay layer directly, with no widget rebuild.
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../engine/metrics.dart';
 import '../engine/protocol_constants.dart';
 import '../engine/protocol_types.dart';
 import '../engine/tiptap_bridge.dart';
 import 'editor_controller.dart';
+import 'frame_timing_recorder.dart';
 import 'input/block_text_extractor.dart';
 import 'input/text_input_handler.dart';
 import 'input/typing_latency_tracker.dart';
@@ -133,7 +167,26 @@ class _TiptapEditorState extends State<TiptapEditor> {
   /// typing latency, forwarding measured and dropped samples to the controller.
   late final TypingLatencyTracker _latencyTracker;
 
+  /// Records the build and raster durations of every state-driven frame into
+  /// the port-phase metrics, decomposing the Dart-side share of the typing
+  /// latency the tracker above measures end-to-end.
+  late final FrameTimingRecorder _frameTimingRecorder;
+
   final FocusNode _focusNode = FocusNode();
+
+  /// Controls the document's scroll view, and doubles as the selection
+  /// overlay's repaint listenable. With the overlay isolated behind its own
+  /// RepaintBoundary, scrolling the document no longer implicitly repaints
+  /// it — the painter would keep drawing the caret and highlights at their
+  /// pre-scroll pixel positions while text moves underneath. Feeding this
+  /// controller to the overlay makes each scroll tick repaint exactly the
+  /// small overlay layer, with no setState and no document raster work.
+  ///
+  /// The existing chrome-geometry path is unaffected: handles and toolbar
+  /// still reposition through the ScrollNotification listener in
+  /// [_buildContent], which is a widget-level concern the paint-time
+  /// listenable cannot serve.
+  final ScrollController _scrollController = ScrollController();
 
   /// When true, the next stateChanged event triggers a syncState call.
   ///
@@ -235,6 +288,23 @@ class _TiptapEditorState extends State<TiptapEditor> {
       },
     );
 
+    /// The recorder registers a scheduler timings callback lazily and must
+    /// be unregistered in dispose(), unlike the latency tracker. Samples go
+    /// straight into the controller's metrics holder — the same instance the
+    /// overlay reads.
+    _frameTimingRecorder = FrameTimingRecorder(
+      onSample: (buildMs, rasterMs) {
+        widget.controller.metrics.recordPortPhase(
+          PortPhase.frameBuild,
+          buildMs,
+        );
+        widget.controller.metrics.recordPortPhase(
+          PortPhase.frameRaster,
+          rasterMs,
+        );
+      },
+    );
+
     _focusNode.addListener(_onFocusChanged);
 
     _subscribe();
@@ -288,6 +358,15 @@ class _TiptapEditorState extends State<TiptapEditor> {
         /// the rebuild this state produced has actually painted.
         _latencyTracker.pairWithRepaint();
 
+        /// Target the frame this state update produces for build/raster
+        /// measurement. The post-frame callback runs at the end of exactly
+        /// that frame (setState above scheduled it), when the platform
+        /// dispatcher's frameData identifies it — which is what the recorder
+        /// requires for its exact frame-number pairing.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _frameTimingRecorder.captureCurrentFrame();
+        });
+
         /// Only sync the platform's text input state when a tap initiated the
         /// cursor move — see [_syncNeeded].
         if (_syncNeeded &&
@@ -312,7 +391,9 @@ class _TiptapEditorState extends State<TiptapEditor> {
   void dispose() {
     _unsubscribe();
     _inputHandler.dispose();
+    _frameTimingRecorder.dispose();
     _focusNode.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -783,10 +864,10 @@ class _TiptapEditorState extends State<TiptapEditor> {
   /// Schedule a post-frame recomputation of the selection chrome geometry.
   ///
   /// The geometry must be computed after layout: the registry's pixel lookups
-  /// go through RenderParagraph text-layout queries, and the document
-  /// renderer's per-build GlobalKeys mean those RenderParagraphs are freshly
-  /// created — and thus not yet laid out — during every build phase. Querying
-  /// them from build throws !debugNeedsLayout.
+  /// go through RenderParagraph text-layout queries, and any RenderParagraph
+  /// affected by the current edit (including newly inserted blocks) is dirty
+  /// — not yet laid out — during the build phase. Querying them from build
+  /// throws !debugNeedsLayout.
   ///
   /// setState is only called when the recomputed geometry differs from the
   /// cached one, so the build → post-frame → setState cycle converges after
@@ -1011,7 +1092,9 @@ class _TiptapEditorState extends State<TiptapEditor> {
       child: NotificationListener<ScrollNotification>(
         /// Reposition the selection chrome while the document scrolls under
         /// it: schedule a post-frame geometry recomputation, which setStates
-        /// only if positions actually moved.
+        /// only if positions actually moved. The selection PAINTER needs no
+        /// such scheduling — it follows scrolling through the scroll
+        /// controller wired in as its repaint listenable below.
         onNotification: (_) {
           if (hasRangeSelection) {
             _scheduleChromeGeometryUpdate();
@@ -1021,22 +1104,40 @@ class _TiptapEditorState extends State<TiptapEditor> {
         child: Stack(
           key: _overlayStackKey,
           children: [
-            SingleChildScrollView(
-              padding: widget.padding,
-              child: DocumentRenderer(
-                doc: _editorState!.doc!,
-                positionRegistry: _positionRegistry,
+            /// The document's raster layer. The boundary keeps sibling
+            /// repaints (cursor blink, chrome updates, magnifier) from
+            /// re-rasterizing document text, and sits around the scroll
+            /// view — not inside it — so the layer is viewport-sized rather
+            /// than document-sized (see the file header).
+            RepaintBoundary(
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                padding: widget.padding,
+                child: DocumentRenderer(
+                  doc: _editorState!.doc!,
+                  positionRegistry: _positionRegistry,
+                ),
               ),
             ),
 
             /// Paints the effective selection, so an in-progress gesture's
             /// local preview is highlighted without an engine round-trip.
+            ///
+            /// The overlay's own boundary is what makes the blink cheap: its
+            /// twice-a-second setState now re-rasterizes only this layer.
+            /// The scroll controller is passed as the painter's repaint
+            /// listenable because, once isolated, the overlay no longer gets
+            /// the free repaint-on-scroll it used to inherit from sharing a
+            /// layer with the document (see the file header).
             Positioned.fill(
               child: IgnorePointer(
-                child: EditorSelectionOverlay(
-                  selection: effectiveSelection,
-                  registry: _positionRegistry,
-                  hasFocus: _hasFocus,
+                child: RepaintBoundary(
+                  child: EditorSelectionOverlay(
+                    selection: effectiveSelection,
+                    registry: _positionRegistry,
+                    hasFocus: _hasFocus,
+                    repaint: _scrollController,
+                  ),
                 ),
               ),
             ),

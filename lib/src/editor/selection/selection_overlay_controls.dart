@@ -15,14 +15,13 @@
 // IMPORTANT — why handles take precomputed geometry instead of querying the
 // PositionRegistry themselves: the registry resolves positions through
 // RenderParagraph text-layout queries (getOffsetForCaret), which assert that
-// the paragraph has been laid out. The document renderer creates fresh
-// GlobalKeys (and therefore fresh RenderParagraphs) on every rebuild, so
-// during the build phase those render objects are never laid out yet —
-// querying them from a widget's build() throws the !debugNeedsLayout
-// assertion. The editor therefore computes a [SelectionChromeGeometry] in a
-// post-frame callback (after layout, when the registry is safe to read) and
-// passes the cached result here. This widget must never call the registry
-// during build.
+// the paragraph has been laid out. During the build phase, any
+// RenderParagraph affected by the current edit — including newly inserted
+// blocks — is dirty and not yet laid out, so querying the registry from a
+// widget's build() throws the !debugNeedsLayout assertion. The editor
+// therefore computes a [SelectionChromeGeometry] in a post-frame callback
+// (after layout, when the registry is safe to read) and passes the cached
+// result here. This widget must never call the registry during build.
 //
 // Layout convention: the editor places these widgets inside its overlay
 // Stack; all geometry offsets are in that Stack's local space. Handle
