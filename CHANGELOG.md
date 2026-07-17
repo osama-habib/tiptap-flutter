@@ -46,3 +46,7 @@
 - Update README.md
 - Better performance metrices.
 - Better engine performance.
+
+## 0.2.0
+
+- Better performance.
