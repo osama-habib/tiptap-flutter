@@ -39,6 +39,13 @@ export 'src/engine/metrics.dart';
 export 'src/editor/editor_controller.dart';
 
 export 'src/editor/tiptap_editor.dart';
+
+// The context object handed to TiptapEditor.selectionToolbarBuilder — pixel
+// geometry plus clipboard callbacks — so apps can anchor a custom selection
+// toolbar over the selection. SelectionChromeGeometry rides along for its
+// endpoint offsets.
+export 'src/editor/selection/selection_overlay_controls.dart'
+    show TiptapSelectionToolbarContext, SelectionChromeGeometry;
 export 'src/editor/tiptap_toolbar.dart' show TiptapToolbar, ImageInsertResult;
 export 'src/editor/performance_overlay.dart';
 

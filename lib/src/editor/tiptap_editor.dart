@@ -99,12 +99,32 @@ class TiptapEditor extends StatefulWidget {
   final Widget Function(BuildContext context, String? errorMessage)?
   errorBuilder;
 
+  /// Builder for a custom selection toolbar, replacing the built-in platform
+  /// Cut/Copy/Paste/Select All menu.
+  ///
+  /// Called only while a non-empty selection has resolved pixel geometry —
+  /// exactly when the built-in toolbar would otherwise show. The returned
+  /// widget is placed directly into the editor's overlay [Stack], so use a
+  /// [Positioned] with the coordinates on the supplied
+  /// [TiptapSelectionToolbarContext] to anchor it to the selection.
+  ///
+  /// The clipboard actions the built-in menu would have offered are handed to
+  /// the builder as callbacks, so a replacement can still expose them.
+  ///
+  /// When null, the built-in platform toolbar is used.
+  final Widget Function(
+    BuildContext context,
+    TiptapSelectionToolbarContext toolbar,
+  )?
+  selectionToolbarBuilder;
+
   const TiptapEditor({
     super.key,
     required this.controller,
     this.padding = const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
     this.loadingBuilder,
     this.errorBuilder,
+    this.selectionToolbarBuilder,
   });
 
   @override
@@ -1068,6 +1088,24 @@ class _TiptapEditorState extends State<TiptapEditor> {
   /// space — the toolbar positions itself above the selection when there is
   /// room, below otherwise.
   Widget _buildContextToolbar(SelectionChromeGeometry geometry) {
+    final custom = widget.selectionToolbarBuilder;
+    if (custom != null) {
+      return custom(
+        context,
+        TiptapSelectionToolbarContext(
+          geometry: geometry,
+          onCopy: _copySelection,
+          onCut: _cutSelection,
+          onPaste: _pasteClipboard,
+          onSelectAll: _selectAllInEditor,
+          onDismiss: () {
+            if (!mounted) return;
+            setState(() => _toolbarVisible = false);
+          },
+        ),
+      );
+    }
+
     final endBottom = geometry.endEndpoint;
     final midX = (geometry.startTop.dx + endBottom.dx) / 2;
 

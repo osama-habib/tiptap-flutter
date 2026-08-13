@@ -107,6 +107,56 @@ class SelectionChromeGeometry {
       'endTop: $endTop, h: $endCaretHeight)';
 }
 
+/// Everything a [TiptapEditor.selectionToolbarBuilder] needs to draw a custom
+/// selection toolbar in place of the built-in platform one.
+///
+/// The editor already resolves selection pixel geometry to place its handles;
+/// this hands the same resolved values to the app rather than making it
+/// re-derive them, which it cannot do — the position registry that produces
+/// them is internal to the editor.
+///
+/// Coordinates are in the editor's overlay Stack local space, so a builder
+/// positions its toolbar with a plain [Positioned] inside the [Stack] it is
+/// returned into.
+class TiptapSelectionToolbarContext {
+  /// The selection endpoints' pixel geometry.
+  final SelectionChromeGeometry geometry;
+
+  /// Horizontal midpoint between the two endpoints — the natural x to centre
+  /// a toolbar on.
+  double get midX => (geometry.startTop.dx + geometry.endEndpoint.dx) / 2;
+
+  /// The y a toolbar sitting *above* the selection should have its bottom at.
+  double get topAnchorY => geometry.startTop.dy;
+
+  /// The y a toolbar sitting *below* the selection should have its top at.
+  double get bottomAnchorY => geometry.endEndpoint.dy;
+
+  /// Copy the selected text to the clipboard, keeping the selection.
+  final VoidCallback onCopy;
+
+  /// Copy the selected text and delete it from the document.
+  final VoidCallback onCut;
+
+  /// Replace the selection with the clipboard's text.
+  final VoidCallback onPaste;
+
+  /// Select the whole document.
+  final VoidCallback onSelectAll;
+
+  /// Dismiss the toolbar without changing the selection.
+  final VoidCallback onDismiss;
+
+  const TiptapSelectionToolbarContext({
+    required this.geometry,
+    required this.onCopy,
+    required this.onCut,
+    required this.onPaste,
+    required this.onSelectAll,
+    required this.onDismiss,
+  });
+}
+
 /// Callback for handle drag events. [isStartHandle] identifies which handle
 /// is being dragged; [globalPosition] is the pointer's global position.
 typedef HandleDragCallback =
