@@ -35,6 +35,23 @@ abstract class NodeType {
 
   /// A hard line break within inline content, rendered as a newline.
   static const String hardBreak = 'hardBreak';
+
+  /// A table. Contains only [tableRow] children.
+  static const String table = 'table';
+
+  /// A row within a [table]. Contains [tableCell] and [tableHeader] children.
+  static const String tableRow = 'tableRow';
+
+  /// A body cell within a [tableRow].
+  ///
+  /// A cell holds *block* content — paragraphs, not inline text — so its
+  /// children go through the normal node dispatch rather than being built as
+  /// a single text span.
+  static const String tableCell = 'tableCell';
+
+  /// A header cell within a [tableRow]. Structurally identical to
+  /// [tableCell]; the difference is presentational.
+  static const String tableHeader = 'tableHeader';
 }
 
 /// ProseMirror mark type names, as they appear in the `type` field of a mark
@@ -74,6 +91,37 @@ abstract class NodeAttr {
 
   /// Image title, rendered as a caption.
   static const String title = 'title';
+
+  /// Stable node identifier, from the UniqueID extension.
+  ///
+  /// The renderer does not use it, but it is named here because it is the
+  /// handle a host uses to address one block — scoping an edit to a selection,
+  /// or reconciling a change against a single clause.
+  static const String id = 'id';
+
+  /// Block alignment: `left`, `center`, `right`, or `justify`.
+  static const String textAlign = 'textAlign';
+
+  /// Block writing direction: `ltr` or `rtl`. Absent means inherit.
+  static const String dir = 'dir';
+
+  /// Whether the block's direction was set explicitly by the author.
+  ///
+  /// Carried for round-trip fidelity only. Rendering does not branch on it:
+  /// an explicit `rtl` renders right-to-left whether or not it was locked.
+  static const String dirLocked = 'dirLocked';
+
+  /// Number of columns a table cell spans.
+  static const String colspan = 'colspan';
+
+  /// Number of rows a table cell spans.
+  static const String rowspan = 'rowspan';
+
+  /// Per-column widths on a table cell, in logical pixels.
+  ///
+  /// Emitted by the engine as a list because a merged cell spans several
+  /// columns and carries a width for each.
+  static const String colwidth = 'colwidth';
 }
 
 /// Attribute keys read from a mark's `attrs` map during rendering.

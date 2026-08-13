@@ -40,6 +40,7 @@ import 'text_span_builder.dart';
 
 part 'node_builders.dart';
 part 'image_builders.dart';
+part 'table_builders.dart';
 
 /// Widget that renders an entire annotated document tree.
 ///
@@ -164,6 +165,10 @@ void _registerDefaultBuilders(NodeRendererRegistry registry) {
   registry.register(NodeType.codeBlock, _buildCodeBlock);
   registry.register(NodeType.horizontalRule, _buildHorizontalRule);
   registry.register(NodeType.image, _buildImage);
+  registry.register(NodeType.table, _buildTable);
+  registry.register(NodeType.tableRow, _buildTableRow);
+  registry.register(NodeType.tableCell, _buildTableCell);
+  registry.register(NodeType.tableHeader, _buildTableHeader);
 }
 
 /// The default base text style used for body text.

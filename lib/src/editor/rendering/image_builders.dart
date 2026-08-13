@@ -20,6 +20,42 @@ part of 'document_renderer.dart';
 /// zero-width space so they produce a [RenderParagraph] that registers
 /// with the position registry. This ensures taps on empty paragraphs
 /// (e.g., after pressing Enter) correctly place the cursor there.
+/// Map a `textAlign` attribute onto Flutter's [TextAlign].
+///
+/// Returns null when the attribute is absent or unrecognized, so the block
+/// keeps [RichText]'s default (start-relative) alignment rather than being
+/// forced to a side — which would break right-to-left text.
+TextAlign? _textAlignOf(AnnotatedNode node) {
+  switch (node.attrs?[NodeAttr.textAlign]) {
+    case 'left':
+      return TextAlign.left;
+    case 'center':
+      return TextAlign.center;
+    case 'right':
+      return TextAlign.right;
+    case 'justify':
+      return TextAlign.justify;
+    default:
+      return null;
+  }
+}
+
+/// Map a `dir` attribute onto Flutter's [TextDirection].
+///
+/// Returns null when absent, letting the block inherit the ambient
+/// [Directionality] — which is what an undirected node means. Only explicit
+/// values override it.
+TextDirection? _textDirectionOf(AnnotatedNode node) {
+  switch (node.attrs?[NodeAttr.dir]) {
+    case 'rtl':
+      return TextDirection.rtl;
+    case 'ltr':
+      return TextDirection.ltr;
+    default:
+      return null;
+  }
+}
+
 Widget _buildRichTextBlock({
   required AnnotatedNode node,
   required TextStyle style,
@@ -27,6 +63,8 @@ Widget _buildRichTextBlock({
   EdgeInsets padding = const EdgeInsets.symmetric(vertical: 4),
 }) {
   final isEmpty = node.content == null || node.content!.isEmpty;
+  final textAlign = _textAlignOf(node);
+  final textDirection = _textDirectionOf(node);
 
   /// The position registry uses this key to find the RichText's
   /// RenderParagraph later for hit-testing and caret positioning.
@@ -61,7 +99,12 @@ Widget _buildRichTextBlock({
 
     return Padding(
       padding: padding,
-      child: RichText(key: richTextKey, text: emptySpan),
+      child: RichText(
+        key: richTextKey,
+        text: emptySpan,
+        textAlign: textAlign ?? TextAlign.start,
+        textDirection: textDirection,
+      ),
     );
   }
 
@@ -84,7 +127,12 @@ Widget _buildRichTextBlock({
 
   return Padding(
     padding: padding,
-    child: RichText(key: richTextKey, text: result.span),
+    child: RichText(
+      key: richTextKey,
+      text: result.span,
+      textAlign: textAlign ?? TextAlign.start,
+      textDirection: textDirection,
+    ),
   );
 }
 
