@@ -1050,16 +1050,11 @@ class _TiptapEditorState extends State<TiptapEditor> {
         child: Stack(
           key: _overlayStackKey,
           children: [
-            /// RepaintBoundary so a chrome-only reposition can't dirty the
-            /// document's layer — the selection chrome now rebuilds through
-            /// the ValueListenableBuilder below without touching this subtree.
-            RepaintBoundary(
-              child: SingleChildScrollView(
-                padding: widget.padding,
-                child: DocumentRenderer(
-                  doc: _editorState!.doc!,
-                  positionRegistry: _positionRegistry,
-                ),
+            SingleChildScrollView(
+              padding: widget.padding,
+              child: DocumentRenderer(
+                doc: _editorState!.doc!,
+                positionRegistry: _positionRegistry,
               ),
             ),
 
