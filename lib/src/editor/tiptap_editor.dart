@@ -223,7 +223,17 @@ class _TiptapEditorState extends State<TiptapEditor> {
   /// computed post-frame because the position registry's text-layout queries
   /// are invalid during the build phase (see the file header). Null when
   /// there is no range selection or the geometry has not been computed yet.
-  SelectionChromeGeometry? _chromeGeometry;
+  ///
+  /// A [ValueNotifier], NOT a plain field behind setState: while the document
+  /// scrolls under a selection, the chrome must be repositioned every frame,
+  /// but a setState there would rebuild the whole editor — including
+  /// [DocumentRenderer], which re-creates its GlobalKeys/RenderParagraphs on
+  /// every build and thus re-lays-out the entire document each scroll frame
+  /// (the visible jank, and the toolbar drifting a frame behind the text).
+  /// Driving only a [ValueListenableBuilder] around the handles + toolbar
+  /// keeps the document subtree untouched during scroll.
+  final ValueNotifier<SelectionChromeGeometry?> _chromeGeometry =
+      ValueNotifier<SelectionChromeGeometry?>(null);
 
   /// Guard so at most one chrome-geometry post-frame callback is pending.
   bool _chromeGeometryUpdateScheduled = false;
@@ -299,7 +309,7 @@ class _TiptapEditorState extends State<TiptapEditor> {
 
           if (state.selection == null || state.selection!.empty) {
             _toolbarVisible = false;
-            _chromeGeometry = null;
+            _chromeGeometry.value = null;
           }
         });
 
@@ -333,6 +343,7 @@ class _TiptapEditorState extends State<TiptapEditor> {
     _unsubscribe();
     _inputHandler.dispose();
     _focusNode.dispose();
+    _chromeGeometry.dispose();
     super.dispose();
   }
 
@@ -578,7 +589,7 @@ class _TiptapEditorState extends State<TiptapEditor> {
       setState(() {
         _previewSelection = null;
         _toolbarVisible = false;
-        _chromeGeometry = null;
+        _chromeGeometry.value = null;
       });
     }
 
@@ -819,12 +830,10 @@ class _TiptapEditorState extends State<TiptapEditor> {
       _chromeGeometryUpdateScheduled = false;
       if (!mounted) return;
 
-      final updated = _computeChromeGeometry();
-      if (updated != _chromeGeometry) {
-        setState(() {
-          _chromeGeometry = updated;
-        });
-      }
+      // Assigning the notifier only notifies when the value actually differs
+      // (SelectionChromeGeometry has value equality), and it drives just the
+      // chrome layer's ValueListenableBuilder — never a full-editor setState.
+      _chromeGeometry.value = _computeChromeGeometry();
     });
   }
 
@@ -1041,11 +1050,16 @@ class _TiptapEditorState extends State<TiptapEditor> {
         child: Stack(
           key: _overlayStackKey,
           children: [
-            SingleChildScrollView(
-              padding: widget.padding,
-              child: DocumentRenderer(
-                doc: _editorState!.doc!,
-                positionRegistry: _positionRegistry,
+            /// RepaintBoundary so a chrome-only reposition can't dirty the
+            /// document's layer — the selection chrome now rebuilds through
+            /// the ValueListenableBuilder below without touching this subtree.
+            RepaintBoundary(
+              child: SingleChildScrollView(
+                padding: widget.padding,
+                child: DocumentRenderer(
+                  doc: _editorState!.doc!,
+                  positionRegistry: _positionRegistry,
+                ),
               ),
             ),
 
@@ -1061,16 +1075,29 @@ class _TiptapEditorState extends State<TiptapEditor> {
               ),
             ),
 
-            if (hasRangeSelection && _chromeGeometry != null)
-              EditorSelectionHandles(
-                geometry: _chromeGeometry!,
-                onDragStart: _onHandleDragStart,
-                onDragUpdate: _onHandleDragUpdate,
-                onDragEnd: _onHandleDragEnd,
+            /// The selection chrome (handles + toolbar) is the only thing that
+            /// repositions while scrolling. Isolating it here means a scroll
+            /// updates just this builder, never the DocumentRenderer above —
+            /// which is what removed the per-frame re-layout jank and the
+            /// toolbar lagging behind the text.
+            if (hasRangeSelection)
+              ValueListenableBuilder<SelectionChromeGeometry?>(
+                valueListenable: _chromeGeometry,
+                builder: (context, geometry, _) {
+                  if (geometry == null) return const SizedBox.shrink();
+                  return Stack(
+                    children: [
+                      EditorSelectionHandles(
+                        geometry: geometry,
+                        onDragStart: _onHandleDragStart,
+                        onDragUpdate: _onHandleDragUpdate,
+                        onDragEnd: _onHandleDragEnd,
+                      ),
+                      if (_toolbarVisible) _buildContextToolbar(geometry),
+                    ],
+                  );
+                },
               ),
-
-            if (_toolbarVisible && hasRangeSelection && _chromeGeometry != null)
-              _buildContextToolbar(_chromeGeometry!),
 
             if (_magnifierFocalPoint != null)
               EditorDragMagnifier(focalPoint: _magnifierFocalPoint!),
