@@ -1238,7 +1238,10 @@ class TiptapBridge {
       message: message,
     );
     _log.add(entry);
-    _logController.add(entry);
+    // Guard against logging during/after dispose: dispose() closes this
+    // controller, and any late bridge activity would otherwise "add after
+    // close" and throw during widget-tree finalization.
+    if (!_logController.isClosed) _logController.add(entry);
 
     /// Print to console (visible in `flutter run` terminal / adb logcat)
     /// so logs can be easily copied and shared.
@@ -1292,6 +1295,10 @@ class TiptapBridge {
 
     _updateState(EngineState.destroyed);
 
+    // Log before closing the controllers — logging after would add to a
+    // closed stream.
+    _addLog(LogDirection.system, 'Bridge disposed successfully');
+
     _engineStateController.close();
     _schemaReadyController.close();
     _stateChangedController.close();
@@ -1300,7 +1307,5 @@ class TiptapBridge {
     _extensionEventController.close();
     _logController.close();
     _metricsController.close();
-
-    _addLog(LogDirection.system, 'Bridge disposed successfully');
   }
 }
