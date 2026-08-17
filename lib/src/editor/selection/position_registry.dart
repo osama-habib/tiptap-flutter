@@ -225,6 +225,13 @@ class PositionRegistry {
   ///
   /// Returns null if the offset doesn't fall within any registered block.
   int? positionFromGlobalOffset(Offset globalOffset) {
+    /// A block the tap falls inside vertically but not horizontally — the
+    /// forgiving fallback for a tap in the page margin beside a normal,
+    /// full-width paragraph. Used only when no block contains the tap in
+    /// BOTH axes.
+    RegisteredBlock? verticalFallback;
+    Offset? verticalFallbackLocal;
+
     for (final block in _blocks) {
       final rp = block.renderParagraph;
 
@@ -234,16 +241,30 @@ class PositionRegistry {
       if (rp == null || !rp.attached || !rp.hasSize) continue;
 
       final localOffset = rp.globalToLocal(globalOffset);
-
-      /// Use the semantic bounds (size) rather than hit testing to be
-      /// more forgiving — taps slightly outside the text should still register.
       final size = rp.size;
-      if (localOffset.dy >= 0 && localOffset.dy <= size.height) {
-        final textPosition = rp.getPositionForOffset(localOffset);
-        final localTextOffset = textPosition.offset;
-        final docPos = block.localOffsetToPos(localTextOffset);
+      if (localOffset.dy < 0 || localOffset.dy > size.height) continue;
 
-        return docPos;
+      /// Prefer the block that also contains the tap horizontally. Table cells
+      /// in one row share a vertical band, so a y-only match always resolves
+      /// to the row's first cell — the caret then lands in the wrong cell and
+      /// the other cells are unreachable (worse in RTL). The x check picks the
+      /// actual cell under the finger.
+      if (localOffset.dx >= 0 && localOffset.dx <= size.width) {
+        final textPosition = rp.getPositionForOffset(localOffset);
+        return block.localOffsetToPos(textPosition.offset);
+      }
+
+      verticalFallback ??= block;
+      verticalFallbackLocal ??= localOffset;
+    }
+
+    /// No exact hit — use the first vertically-matching block (a margin tap
+    /// beside a normal, full-width paragraph, where x forgiveness is wanted).
+    if (verticalFallback != null && verticalFallbackLocal != null) {
+      final rp = verticalFallback.renderParagraph;
+      if (rp != null && rp.attached && rp.hasSize) {
+        final textPosition = rp.getPositionForOffset(verticalFallbackLocal);
+        return verticalFallback.localOffsetToPos(textPosition.offset);
       }
     }
 
@@ -287,13 +308,15 @@ class PositionRegistry {
   ///
   /// Returns null if the offset doesn't fall within any registered block.
   WordRange? wordRangeAtGlobalOffset(Offset globalOffset) {
-    for (final block in _blocks) {
-      final rp = block.renderParagraph;
-      if (rp == null || !rp.attached || !rp.hasSize) continue;
+    /// Same two-pass hit test as [positionFromGlobalOffset]: prefer the block
+    /// under the finger in both axes so long-press word selection lands in the
+    /// right table cell, falling back to a y-only match for margin taps.
+    RegisteredBlock? verticalFallback;
+    Offset? verticalFallbackLocal;
 
-      final localOffset = rp.globalToLocal(globalOffset);
-      final size = rp.size;
-      if (localOffset.dy < 0 || localOffset.dy > size.height) continue;
+    WordRange? wordIn(RegisteredBlock block, Offset localOffset) {
+      final rp = block.renderParagraph;
+      if (rp == null) return null;
 
       /// Empty block: exactly one zero-length span mapping. There is no
       /// word here. Return a collapsed range at the block's pos, which is
@@ -316,6 +339,26 @@ class PositionRegistry {
         return WordRange(from: fromPos, to: fromPos);
       }
       return WordRange(from: fromPos, to: toPos);
+    }
+
+    for (final block in _blocks) {
+      final rp = block.renderParagraph;
+      if (rp == null || !rp.attached || !rp.hasSize) continue;
+
+      final localOffset = rp.globalToLocal(globalOffset);
+      final size = rp.size;
+      if (localOffset.dy < 0 || localOffset.dy > size.height) continue;
+
+      if (localOffset.dx >= 0 && localOffset.dx <= size.width) {
+        return wordIn(block, localOffset);
+      }
+
+      verticalFallback ??= block;
+      verticalFallbackLocal ??= localOffset;
+    }
+
+    if (verticalFallback != null && verticalFallbackLocal != null) {
+      return wordIn(verticalFallback, verticalFallbackLocal);
     }
     return null;
   }
