@@ -118,6 +118,12 @@ class TiptapEditor extends StatefulWidget {
   )?
   selectionToolbarBuilder;
 
+  /// Overrides for the document's body text style — most usefully the font
+  /// (`TextStyle(fontFamily: ...)`). Merged over the renderer's default, so
+  /// passing only a font keeps the default size/height/color; headings and
+  /// inline marks derive from the result. When null, the default is used.
+  final TextStyle? baseTextStyle;
+
   const TiptapEditor({
     super.key,
     required this.controller,
@@ -125,6 +131,7 @@ class TiptapEditor extends StatefulWidget {
     this.loadingBuilder,
     this.errorBuilder,
     this.selectionToolbarBuilder,
+    this.baseTextStyle,
   });
 
   @override
@@ -1055,6 +1062,7 @@ class _TiptapEditorState extends State<TiptapEditor> {
               child: DocumentRenderer(
                 doc: _editorState!.doc!,
                 positionRegistry: _positionRegistry,
+                baseTextStyle: widget.baseTextStyle,
               ),
             ),
 

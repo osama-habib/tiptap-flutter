@@ -61,11 +61,18 @@ class DocumentRenderer extends StatefulWidget {
   /// which includes all standard node type builders.
   final NodeRendererRegistry? registry;
 
+  /// Overrides for the default body text style — most usefully the font.
+  /// Merged over [_defaultBaseTextStyle], so passing only `fontFamily` keeps
+  /// the default size/height/color. Headings and inline marks derive from the
+  /// merged result, so one style drives the whole document's typography.
+  final TextStyle? baseTextStyle;
+
   const DocumentRenderer({
     super.key,
     required this.doc,
     this.positionRegistry,
     this.registry,
+    this.baseTextStyle,
   });
 
   @override
@@ -80,6 +87,11 @@ class _DocumentRendererState extends State<DocumentRenderer> {
     if (!reg.hasBuilder(NodeType.paragraph)) {
       _registerDefaultBuilders(reg);
     }
+
+    // Publish the effective base style for the (part-file) node builders to
+    // read. Set at the top of build and consumed during the same synchronous
+    // node walk below, so concurrent editors with different styles don't race.
+    _baseTextStyle = _defaultBaseTextStyle.merge(widget.baseTextStyle);
 
     /// Clear before rebuilding so stale entries from previous renders don't
     /// persist.
@@ -172,11 +184,17 @@ void _registerDefaultBuilders(NodeRendererRegistry registry) {
 }
 
 /// The default base text style used for body text.
-const _baseTextStyle = TextStyle(
+const _defaultBaseTextStyle = TextStyle(
   fontSize: 16,
   height: 1.6,
   color: Color(0xFF1F1F1F),
 );
+
+/// The effective base style for the current render, set by
+/// [_DocumentRendererState.build] from [DocumentRenderer.baseTextStyle]. The
+/// block builders (paragraph/heading/image caption) read this. Defaults to
+/// [_defaultBaseTextStyle] until a build runs.
+TextStyle _baseTextStyle = _defaultBaseTextStyle;
 
 /// Handle link taps. In a production app, this would use url_launcher or a
 /// custom callback.
