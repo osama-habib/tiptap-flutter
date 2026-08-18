@@ -124,10 +124,27 @@ class TiptapEditor extends StatefulWidget {
   /// inline marks derive from the result. When null, the default is used.
   final TextStyle? baseTextStyle;
 
+  /// How dragging the document affects the keyboard, forwarded to the content
+  /// [SingleChildScrollView].
+  ///
+  /// Defaults to [ScrollViewKeyboardDismissBehavior.manual], which is the
+  /// behaviour before this option existed: the keyboard stays up until
+  /// something takes focus off the editor. Pass
+  /// [ScrollViewKeyboardDismissBehavior.onDrag] for the platform convention —
+  /// scrolling the document dismisses the keyboard, the way Notes and Safari
+  /// behave.
+  ///
+  /// Worth setting whenever the host replaces the built-in selection toolbar
+  /// (see [selectionToolbarBuilder]): the replacement may not carry a dismiss
+  /// control, and with a selection active there may be nothing else on screen
+  /// that can take focus, leaving no way to close the keyboard.
+  final ScrollViewKeyboardDismissBehavior keyboardDismissBehavior;
+
   const TiptapEditor({
     super.key,
     required this.controller,
     this.padding = const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+    this.keyboardDismissBehavior = ScrollViewKeyboardDismissBehavior.manual,
     this.loadingBuilder,
     this.errorBuilder,
     this.selectionToolbarBuilder,
@@ -1059,6 +1076,7 @@ class _TiptapEditorState extends State<TiptapEditor> {
           children: [
             SingleChildScrollView(
               padding: widget.padding,
+              keyboardDismissBehavior: widget.keyboardDismissBehavior,
               child: DocumentRenderer(
                 doc: _editorState!.doc!,
                 positionRegistry: _positionRegistry,
